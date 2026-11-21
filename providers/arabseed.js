@@ -7,7 +7,7 @@
 const CONFIG = {
   // ضع رابط ملف domains.json المباشر (Raw) من مستودعك على GitHub مرة واحدة فقط
   // مثال: 'https://raw.githubusercontent.com/USERNAME/nuvio-arabic-streams/main/domains.json'
-  DOMAINS_URL: 'https://github.com/minasaad94/nuvio-ar-plugin.git',
+  DOMAINS_URL: 'https://raw.githubusercontent.com/minasaad94/nuvio-ar-plugin/main/domains.json',
 
   // الدومين الاحتياطي في حال تعذر الوصول إلى domains.json أو قبل تعديل الرابط بالأعلى
   FALLBACK_BASE_URL: 'https://a.asd.homes',
