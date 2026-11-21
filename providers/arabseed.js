@@ -7,10 +7,10 @@
 const CONFIG = {
   // ضع رابط ملف domains.json المباشر (Raw) من مستودعك على GitHub مرة واحدة فقط
   // مثال: 'https://raw.githubusercontent.com/USERNAME/nuvio-arabic-streams/main/domains.json'
-  DOMAINS_URL: 'https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/domains.json',
+  DOMAINS_URL: 'https://raw.githubusercontent.com/minasaad94/nuvio-ar-plugin/main/domains.json',
 
   // الدومين الاحتياطي في حال تعذر الوصول إلى domains.json أو قبل تعديل الرابط بالأعلى
-  FALLBACK_BASE_URL: 'https://a.asd.homes',
+  FALLBACK_BASE_URL: 'https://m.myseed.tv',
 
   // اختياري: مفتاح TMDB محلي (لو تركته فارغاً سيقرأ من tmdb_api_key داخل domains.json إن وجد)
   TMDB_API_KEY: '',
@@ -42,7 +42,7 @@ async function syncRemoteConfig() {
   }
 
   const url = (CONFIG.DOMAINS_URL || '').trim();
-  if (!url || url.indexOf('YOUR_USERNAME') !== -1 || url.indexOf('YOUR_REPO') !== -1) {
+  if (!url) {
     RUNTIME.lastConfigFetch = now;
     return;
   }
@@ -559,6 +559,13 @@ async function resolveWatchPage(itemUrl, baseUrl) {
 
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   try {
+    if (tmdbId && typeof tmdbId === 'object') {
+      const opts = tmdbId;
+      tmdbId = opts.tmdbId || opts.id || opts.imdbId;
+      mediaType = opts.mediaType || opts.type;
+      seasonNum = opts.season || opts.seasonNum;
+      episodeNum = opts.episode || opts.episodeNum;
+    }
     await syncRemoteConfig();
 
     const baseUrl = getBaseUrl();

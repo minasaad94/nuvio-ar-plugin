@@ -1,26 +1,21 @@
-# Arabic Direct Streams — Nuvio Native Plugins Pack (v2.1)
+# Arabic Direct Streams — Nuvio Native Plugins Pack (v2.2 / MySeed Edition)
 
-مستودع إضافات محلية (Native Plugins) لتطبيق **Nuvio** مع ملف إعدادات مركزي واحد (`domains.json`) لتحديث دومينات المصادر الثلاثة من مكان واحد بدون تعديل ملفات الكود.
+مستودع إضافات محلية (Native Plugins) لتطبيق **Nuvio** مضبوط مسبقاً على مستودع `minasaad94/nuvio-ar-plugin` ومجهّز للرفع المباشر بدون أي تعديل يدوي في الروابط.
 
-## هيكل الملفات
+## المحتويات
 ```text
-├── domains.json             # ملف مركزي لتحديث جميع الدومينات من مكان واحد
-├── manifest.json            # ملف تعريف المستودع لتطبيق Nuvio
+├── domains.json             # ملف الدومينات المركزي (يتضمن https://m.myseed.tv)
+├── manifest.json            # تعريف المصادر لتطبيق Nuvio (v2.2.0)
 ├── providers/
-│   ├── cimanow.js
-│   ├── akoam.js
-│   └── arabseed.js
+│   ├── myseed.js            # سكرابر MySeed / ArabSeed المحدث (مفعّل افتراضياً)
+│   ├── cimanow.js           # سكرابر CimaNow (محدّث لرابط مستودعك)
+│   ├── akoam.js             # سكرابر Akoam (محدّث لرابط مستودعك)
+│   └── arabseed.js          # النسخة الكلاسيكية الاحتياطية من عرب سيد
 └── README.md
 ```
 
-## خطوات التجهيز (مرة واحدة فقط)
-
-1. ارفع الملفات إلى مستودع **Public** على GitHub (مثلاً باسم `nuvio-arabic-streams`).
-2. افتح كل ملف من الثلاثة داخل `providers/` مرة واحدة فقط، وعدّل سطر `DOMAINS_URL` ليحمل اسم حسابك واسم المستودع:
-   ```javascript
-   DOMAINS_URL: 'https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/domains.json',
-   ```
-3. أضف رابط المستودع داخل تطبيق **Nuvio** ← **Settings** ← **Plugins** ← **Add Repository**.
-
-## التحديث مستقبلاً (في 10 ثواني من الموبايل)
-عندما يتغير دومين أي موقع، افتح ملف **`domains.json`** فقط على GitHub، عدّل الدومين الجديد، واضغط **Commit**. ستقرأ الإضافات التحديث تلقائياً (الكاش يتحدث كل 30 دقيقة أو فوراً عند إعادة تشغيل التطبيق).
+## خطوات الرفع والتحديث على GitHub
+1. فك ضغط ملف `nuvio-arabic-plugins-v4.zip` وارفع محتوياته إلى جذر مستودع `minasaad94/nuvio-ar-plugin` (استبدل الملفات القديمة).
+2. داخل تطبيق **Nuvio** ← **Settings** ← **Plugins / Local Scrapers** ← اضغط **Refresh** للمستودع.
+3. تأكد أن مصدر **MySeed (ArabSeed)** ظاهر ومفعّل.
+4. مستقبلاً عند تغيّر أي دومين، عدّل ملف `domains.json` فقط على GitHub.

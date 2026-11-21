@@ -1,13 +1,35 @@
 {
   "name": "Arabic Direct Streams (Nuvio)",
-  "version": "2.1.0",
-  "description": "مستودع إضافات Nuvio محلية بإدارة مركزية للدومينات (domains.json) لجلب روابط البث المباشر من CimaNow و Akoam و ArabSeed",
+  "version": "2.2.0",
+  "description": "مستودع إضافات Nuvio محلية لجلب روابط البث المباشر بجودات متعددة من MySeed و CimaNow و Akoam و ArabSeed",
   "scrapers": [
+    {
+      "id": "myseed",
+      "name": "MySeed (ArabSeed)",
+      "description": "أفلام ومسلسلات عربية وأجنبية مترجمة بجودات متعددة من m.myseed.tv (بث مباشر HTTP)",
+      "version": "1.0.0",
+      "author": "Personal",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/myseed.js",
+      "enabled": true,
+      "logo": "https://m.myseed.tv/favicon.ico",
+      "contentLanguage": [
+        "ar",
+        "en"
+      ],
+      "formats": [
+        "mp4",
+        "m3u8"
+      ]
+    },
     {
       "id": "cimanow",
       "name": "CimaNow",
       "description": "أفلام ومسلسلات عربية وأجنبية مترجمة بجودات متعددة من سيما ناو (بث مباشر HTTP)",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "author": "Personal",
       "supportedTypes": [
         "movie",
@@ -29,7 +51,7 @@
       "id": "akoam",
       "name": "Akoam",
       "description": "أفلام ومسلسلات عربية وأجنبية مترجمة بجودات عالية من أكوام (بث مباشر HTTP)",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": "Personal",
       "supportedTypes": [
         "movie",
@@ -49,17 +71,17 @@
     },
     {
       "id": "arabseed",
-      "name": "ArabSeed",
-      "description": "أفلام ومسلسلات عربية وأجنبية مترجمة بسيرفرات متعددة من عرب سيد (بث مباشر HTTP)",
-      "version": "1.1.0",
+      "name": "ArabSeed (Classic)",
+      "description": "النسخة الكلاسيكية من سكرابر عرب سيد كبديل احتياطي (بث مباشر HTTP)",
+      "version": "1.1.1",
       "author": "Personal",
       "supportedTypes": [
         "movie",
         "tv"
       ],
       "filename": "providers/arabseed.js",
-      "enabled": true,
-      "logo": "https://a.asd.homes/favicon.ico",
+      "enabled": false,
+      "logo": "https://m.myseed.tv/favicon.ico",
       "contentLanguage": [
         "ar",
         "en"
