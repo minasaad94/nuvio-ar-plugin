@@ -1,22 +1,23 @@
 /**
- * Nuvio Native Plugin - MySeed / ArabSeed Provider (v1.0.0)
- * مخصص لدومين https://m.myseed.tv/ والواجهات الحديثة لعرب سيد
- * متوافق مع بيئة Hermes / React Native بدون أي مكتبات خارجية
+ * Nuvio Native Plugin - MySeed / ArabSeed Provider (v1.1.0)
+ * مخصص لهيكلة موقع https://m.myseed.tv/ الفعلية:
+ * - يستبعد روابط الـ SEO الوهمية (/video/12345.mp4 في head / og:video / ld+json)
+ * - يجلب سيرفرات كل الجودات (1080p, 720p, 480p) عبر AJAX مع csrf__token
+ * - يفك رابط السيرفر المباشر (/vids.php?t=...) ويعرض حجم الملف
+ * - يفك تغليف السيرفرات الخارجية (/vid/?id=BASE64 و /vid.php?url=BASE64)
+ * - يدعم استخراج الروابط من VOE و Vidara و Byse/Filemoon/Savefiles/Vidmoly
+ * - يدعم جلب النسختين (مترجم + مدبلج) للأفلام عند توفرهما
+ * متوافق 100% مع محرك Hermes داخل Nuvio بدون أي مكتبات خارجية
  */
 
 const CONFIG = {
-  // رابط ملف domains.json في مستودعك لتحديث الدومين مستقبلاً من مكان واحد
   DOMAINS_URL: 'https://raw.githubusercontent.com/minasaad94/nuvio-ar-plugin/main/domains.json',
-
-  // الدومين الافتراضي المباشر (بدون /main/ عشان مسارات البحث تشتغل صح)
   FALLBACK_BASE_URL: 'https://m.myseed.tv',
-
-  // اختياري: مفتاح TMDB المجاني الخاص بك لتحسين البحث للأعمال العربية
   TMDB_API_KEY: '',
-
   DOMAINS_CACHE_TTL_MS: 30 * 60 * 1000,
   TIMEOUT_MS: 13000,
-  MAX_SERVERS_TO_PROBE: 6
+  MAX_SERVERS_PER_QUALITY: 4,
+  MAX_MOVIE_VERSIONS: 2 // يسمح بجلب المترجم والمدبلج معاً لو متاحين
 };
 
 const RUNTIME = {
@@ -29,7 +30,7 @@ const USER_AGENT =
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 
 // ============================================================================
-// أدوات مساعدة آمنة لبيئة Hermes
+// أدوات مساعدة آمنة لمحرك Hermes (بدون atob أو مكتبات Node)
 // ============================================================================
 
 function getBaseUrl() {
@@ -40,6 +41,25 @@ function getBaseUrl() {
 
 function getTmdbApiKey() {
   return (CONFIG.TMDB_API_KEY || RUNTIME.tmdbApiKey || '').trim();
+}
+
+function base64Decode(input) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+  let str = String(input || '')
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .replace(/[\r\n\s=]+$/g, '');
+  let output = '';
+
+  for (let bc = 0, bs = 0, buffer, idx = 0; (buffer = str.charAt(idx++)); ) {
+    buffer = chars.indexOf(buffer);
+    if (buffer === -1) continue;
+    bs = bc % 4 ? bs * 64 + buffer : buffer;
+    if (bc++ % 4) {
+      output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
+    }
+  }
+  return output;
 }
 
 function safeDecodeURIComponent(str) {
@@ -150,36 +170,78 @@ function normalizeQualityLabel(raw) {
   return match ? match[1] + 'p' : 'Auto';
 }
 
-function unpackDeanEdwards(source) {
-  try {
-    const packedMatch = source.match(
-      /eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]*?\}\('([\s\S]*?)',\s*(\d+),\s*(\d+),\s*'([\s\S]*?)'\.split\('\|'\)/
-    );
-    if (!packedMatch) return '';
-
-    let p = packedMatch[1];
-    const a = parseInt(packedMatch[2], 10);
-    let c = parseInt(packedMatch[3], 10);
-    const k = packedMatch[4].split('|');
-
-    function encodeBase(num) {
-      const prefix = num < a ? '' : encodeBase(parseInt(num / a, 10));
-      const rem = num % a;
-      return prefix + (rem > 35 ? String.fromCharCode(rem + 29) : rem.toString(36));
-    }
-
-    while (c--) {
-      if (k[c]) {
-        const token = encodeBase(c);
-        p = p.replace(new RegExp('\\b' + token + '\\b', 'g'), k[c]);
-      }
-    }
-    return p;
-  } catch (e) {
-    return '';
-  }
+function stripHeadAndSchema(html) {
+  if (!html) return '';
+  return String(html)
+    .replace(/<head\b[\s\S]*?<\/head>/gi, '')
+    .replace(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi, '');
 }
 
+// استبعاد الروابط الوهمية أو غير القابلة للتشغيل (مثل /video/851555.mp4 الخاص بالـ SEO)
+function isFakeOrInvalidMediaUrl(url) {
+  if (!url || !/^https?:\/\//i.test(url)) return true;
+  if (/\.(?:jpg|jpeg|png|webp|gif|svg|vtt|srt|js|css|ico|woff2?)(?:\?|$)/i.test(url)) return true;
+  if (/myseed\.tv\/video\/\d+\.mp4(?:\?|$)/i.test(url)) return true;
+  if (/arabseed\.[^/]+\/video\/\d+\.mp4(?:\?|$)/i.test(url)) return true;
+  if (/\/video\/\d{4,}\.mp4(?:\?|$)/i.test(url) && url.indexOf(getOriginFromUrl(getBaseUrl())) !== -1) {
+    return true;
+  }
+  return false;
+}
+
+// فك تغليف روابط myseed.pics/vid/?id=BASE64 و /vid.php?url=BASE64
+function unwrapMySeedEmbedUrl(url, baseUrl) {
+  const normalized = normalizeUrl(url, baseUrl);
+  const idMatch = normalized.match(/\/vid\/\?id=([A-Za-z0-9\-_=]+)/i);
+  if (idMatch && idMatch[1]) {
+    const decoded = base64Decode(idMatch[1]).trim();
+    if (/^https?:\/\//i.test(decoded)) {
+      return decoded;
+    }
+  }
+  const urlMatch = normalized.match(/\/vid\.php\?url=([A-Za-z0-9\-_=]+)/i);
+  if (urlMatch && urlMatch[1]) {
+    const decoded = base64Decode(urlMatch[1]).trim();
+    if (/^https?:\/\//i.test(decoded)) {
+      return decoded;
+    }
+  }
+  return normalized;
+}
+
+// فك تشفير سكربتات المشغلات الشائعة (Dean Edwards p,a,c,k,e,d)
+function unpackDeanEdwards(source) {
+  let result = '';
+  const regex =
+    /eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]*?\}\('([\s\S]*?)',\s*(\d+),\s*(\d+),\s*'([\s\S]*?)'\.split\('\|'\)/g;
+  let packedMatch;
+
+  while ((packedMatch = regex.exec(source)) !== null) {
+    try {
+      let p = packedMatch[1];
+      const a = parseInt(packedMatch[2], 10);
+      let c = parseInt(packedMatch[3], 10);
+      const k = packedMatch[4].split('|');
+
+      function encodeBase(num) {
+        const prefix = num < a ? '' : encodeBase(parseInt(num / a, 10));
+        const rem = num % a;
+        return prefix + (rem > 35 ? String.fromCharCode(rem + 29) : rem.toString(36));
+      }
+
+      while (c--) {
+        if (k[c]) {
+          const token = encodeBase(c);
+          p = p.replace(new RegExp('\\b' + token + '\\b', 'g'), k[c]);
+        }
+      }
+      result += '\n' + p;
+    } catch (e) {}
+  }
+  return result;
+}
+
+// مزامنة الدومين من domains.json المركزي
 async function syncRemoteConfig() {
   const now = Date.now();
   if (RUNTIME.lastConfigFetch > 0 && now - RUNTIME.lastConfigFetch < CONFIG.DOMAINS_CACHE_TTL_MS) {
@@ -218,7 +280,7 @@ async function syncRemoteConfig() {
 }
 
 // ============================================================================
-// 1. جلب بيانات الفيلم / المسلسل (الاسم الإنجليزي والعربي + السنة)
+// 1. جلب بيانات الفيلم / المسلسل (الاسم + السنة)
 // ============================================================================
 
 async function resolveMetadata(tmdbId, mediaType) {
@@ -310,7 +372,7 @@ async function resolveMetadata(tmdbId, mediaType) {
 }
 
 // ============================================================================
-// 2. البحث داخل m.myseed.tv وترتيب النتائج
+// 2. البحث داخل m.myseed.tv (باستخدام مسار الموقع الرسمي /find/?word=...)
 // ============================================================================
 
 function scoreCandidate(candidate, meta, mediaType, seasonNum) {
@@ -325,7 +387,7 @@ function scoreCandidate(candidate, meta, mediaType, seasonNum) {
     score += 55;
   } else if (targetTitle) {
     const words = targetTitle.split(' ').filter(function (w) {
-      return w.length > 2;
+      return w.length > 1;
     });
     let matched = 0;
     words.forEach(function (w) {
@@ -352,6 +414,8 @@ function scoreCandidate(candidate, meta, mediaType, seasonNum) {
 
   if (mediaType === 'movie' && !isSeries) score += 20;
   if (mediaType === 'tv' && isSeries) score += 20;
+  if (mediaType === 'movie' && isSeries) score -= 25;
+  if (mediaType === 'tv' && !isSeries) score -= 25;
 
   if (mediaType === 'tv' && seasonNum) {
     const sPattern = new RegExp('(?:الموسم|موسم|season|s)\\s*0*' + seasonNum + '(?!\\d)', 'i');
@@ -360,10 +424,16 @@ function scoreCandidate(candidate, meta, mediaType, seasonNum) {
     }
   }
 
+  // أفضلية خفيفة للنسخة المترجمة كأول خيار (مع الاحتفاظ بالمدبلجة كخيار ثانٍ)
+  if (mediaType === 'movie' && candTitle.includes('مترجم')) {
+    score += 5;
+  }
+
   return score;
 }
 
 function parseSearchResults(html, baseUrl) {
+  const bodyHtml = stripHeadAndSchema(html);
   const candidates = [];
   const seen = {};
 
@@ -371,7 +441,10 @@ function parseSearchResults(html, baseUrl) {
     const href = normalizeUrl(rawHref, baseUrl);
     if (!href || seen[href]) return;
     if (!/^https?:\/\//i.test(href)) return;
-    if (/\/(category|tag|page|find|main|home|wp-content|wp-admin|actor|genre)\b/i.test(href)) return;
+    if (/\/(category|tag|page|find|main|home|recently|trend|orders|movies|series|wp-content|wp-admin|actor|director|genre)\/?$/i.test(href)) {
+      return;
+    }
+    if (/\/(category|tag|actor|director|genre)\//i.test(href)) return;
     if (href.replace(/\/$/, '') === baseUrl.replace(/\/$/, '')) return;
 
     const cleanTitle = decodeHtmlEntities(String(rawTitle || '').replace(/<[^>]+>/g, ' '))
@@ -381,13 +454,15 @@ function parseSearchResults(html, baseUrl) {
     seen[href] = true;
     candidates.push({
       url: href,
-      title: cleanTitle || safeDecodeURIComponent(href)
+      title: cleanTitle || safeDecodeURIComponent(href),
+      isDubbed: /مدبلج/i.test(cleanTitle + ' ' + safeDecodeURIComponent(href))
     });
   }
 
-  const newAnchorRegex = /<a\b[^>]*class=["'][^"']*(?:movie__block|MovieBlock|block__item)[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
+  // النمط الفعلي المؤكد في m.myseed.tv: <a href="..." title="..." class="movie__block">
+  const anchorBlockRegex = /<a\b[^>]*class=["'][^"']*movie__block[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
   let m;
-  while ((m = newAnchorRegex.exec(html)) !== null) {
+  while ((m = anchorBlockRegex.exec(bodyHtml)) !== null) {
     const tag = m[0];
     const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
     if (!hrefMatch) continue;
@@ -397,23 +472,17 @@ function parseSearchResults(html, baseUrl) {
     pushCandidate(hrefMatch[1], titleMatch ? titleMatch[1] : m[1]);
   }
 
-  const blockRegex = /<(?:div|li|article)\b[^>]*class=["'][^"']*(?:MovieBlock|movie__block|BlockItem|post)[^"']*["'][^>]*>[\s\S]*?<\/(?:div|li|article)>/gi;
-  while ((m = blockRegex.exec(html)) !== null) {
-    const block = m[0];
-    const hrefMatch = block.match(/<a\b[^>]*href=["']([^"']+)["']/i);
-    if (!hrefMatch) continue;
-    const titleMatch =
-      block.match(/<h[234][^>]*>([\s\S]*?)<\/h[234]>/i) ||
-      block.match(/title=["']([^"']+)["']/i);
-    pushCandidate(hrefMatch[1], titleMatch ? titleMatch[1] : '');
-  }
-
+  // Fallback لكروت إضافية
   if (candidates.length === 0) {
-    const genericRegex = /<a\b[^>]*href=["'](https?:\/\/[^"']+)["'][^>]*title=["']([^"']{3,})["'][^>]*>/gi;
-    while ((m = genericRegex.exec(html)) !== null) {
-      if (m[1].indexOf(getOriginFromUrl(baseUrl)) !== -1) {
-        pushCandidate(m[1], m[2]);
-      }
+    const blockRegex = /<(?:div|li|article)\b[^>]*class=["'][^"']*(?:MovieBlock|item__contents|BlockItem|post)[^"']*["'][^>]*>[\s\S]*?<\/(?:div|li|article)>/gi;
+    while ((m = blockRegex.exec(bodyHtml)) !== null) {
+      const block = m[0];
+      const hrefMatch = block.match(/<a\b[^>]*href=["']([^"']+)["']/i);
+      if (!hrefMatch) continue;
+      const titleMatch =
+        block.match(/title=["']([^"']+)["']/i) ||
+        block.match(/<h[234][^>]*>([\s\S]*?)<\/h[234]>/i);
+      pushCandidate(hrefMatch[1], titleMatch ? titleMatch[1] : '');
     }
   }
 
@@ -422,6 +491,7 @@ function parseSearchResults(html, baseUrl) {
 
 async function searchMySeed(meta, mediaType, seasonNum) {
   const baseUrl = getBaseUrl();
+  const typeParam = mediaType === 'movie' ? 'movies' : 'series';
   const queries = [];
 
   if (mediaType === 'movie' && meta.year) {
@@ -436,8 +506,9 @@ async function searchMySeed(meta, mediaType, seasonNum) {
     const q = queries[i];
     const encoded = encodeURIComponent(q);
 
+    // المسار الرسمي في m.myseed.tv هو /find/?word=...&type=movies|series
     const searchUrls = [
-      baseUrl + '/find/?find=' + encoded,
+      baseUrl + '/find/?word=' + encoded + '&type=' + typeParam,
       baseUrl + '/find/?word=' + encoded,
       baseUrl + '/?s=' + encoded
     ];
@@ -450,10 +521,31 @@ async function searchMySeed(meta, mediaType, seasonNum) {
         const html = await res.text();
         const candidates = parseSearchResults(html, baseUrl);
         if (candidates.length > 0) {
-          candidates.sort(function (a, b) {
-            return scoreCandidate(b, meta, mediaType, seasonNum) - scoreCandidate(a, meta, mediaType, seasonNum);
+          candidates.forEach(function (c) {
+            c._score = scoreCandidate(c, meta, mediaType, seasonNum);
           });
-          return candidates[0].url;
+          candidates.sort(function (a, b) {
+            return b._score - a._score;
+          });
+
+          const topScore = candidates[0]._score;
+          if (topScore < 30) continue;
+
+          if (mediaType === 'movie') {
+            const selected = [candidates[0]];
+            // لو فيه نسخة تانية بنفس العنوان (مثلاً مترجم + مدبلج مصري)، نضيفها كمان
+            for (let k = 1; k < candidates.length && selected.length < CONFIG.MAX_MOVIE_VERSIONS; k++) {
+              if (
+                candidates[k]._score >= topScore - 15 &&
+                candidates[k].isDubbed !== candidates[0].isDubbed
+              ) {
+                selected.push(candidates[k]);
+              }
+            }
+            return selected;
+          }
+
+          return [candidates[0]];
         }
       } catch (e) {
         console.log('[MySeed] Search request failed:', e.message);
@@ -461,11 +553,11 @@ async function searchMySeed(meta, mediaType, seasonNum) {
     }
   }
 
-  return null;
+  return [];
 }
 
 // ============================================================================
-// 3. الوصول إلى الموسم والحلقة في حالة المسلسلات
+// 3. الوصول إلى الموسم والحلقة في المسلسلات
 // ============================================================================
 
 async function resolveEpisodeUrl(seriesUrl, seasonNum, episodeNum) {
@@ -473,7 +565,7 @@ async function resolveEpisodeUrl(seriesUrl, seasonNum, episodeNum) {
   const res = await fetchWithTimeout(seriesUrl, { headers: buildHeaders(baseUrl + '/main/') });
   if (!res.ok) return null;
 
-  let html = await res.text();
+  let html = stripHeadAndSchema(await res.text());
   let currentUrl = seriesUrl;
 
   if (seasonNum) {
@@ -487,7 +579,7 @@ async function resolveEpisodeUrl(seriesUrl, seasonNum, episodeNum) {
         if (href.indexOf('#') === -1 && href.indexOf(getOriginFromUrl(baseUrl)) !== -1) {
           const sRes = await fetchWithTimeout(href, { headers: buildHeaders(currentUrl) });
           if (sRes.ok) {
-            html = await sRes.text();
+            html = stripHeadAndSchema(await sRes.text());
             currentUrl = href;
           }
           break;
@@ -506,6 +598,14 @@ async function resolveEpisodeUrl(seriesUrl, seasonNum, episodeNum) {
     const cleanText = decodeHtmlEntities(inner.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
     const decodedHref = safeDecodeURIComponent(href);
 
+    // نمط رابط الحلقات الفعلي في m.myseed.tv: -s1-eps8/
+    const slugEpMatch = decodedHref.match(/eps0*(\d+)\/?$/i);
+    if (slugEpMatch && parseInt(slugEpMatch[1], 10) === Number(episodeNum)) {
+      if (!seasonNum || decodedHref.indexOf('s' + seasonNum + '-') !== -1 || decodedHref.indexOf('s0' + seasonNum + '-') !== -1) {
+        return href;
+      }
+    }
+
     const emTag = inner.match(/<(?:em|span|b)[^>]*>\s*0*(\d+)\s*<\/(?:em|span|b)>/i);
     if (emTag && parseInt(emTag[1], 10) === Number(episodeNum) && /حلقة|حلقه|ep|episode/i.test(cleanText + decodedHref)) {
       return href;
@@ -521,25 +621,173 @@ async function resolveEpisodeUrl(seriesUrl, seasonNum, episodeNum) {
 }
 
 // ============================================================================
-// 4. استخراج روابط البث المباشر وفحص سيرفرات التبديل والـ Iframes
+// 4. قراءة قائمة السيرفرات والجودات من صفحة /watch/ (بما فيها AJAX للـ 720p و 1080p)
 // ============================================================================
 
-function extractMediaFromText(text, sourceLabel, refererUrl, defaultQuality, seen, streams) {
-  function pushStream(rawUrl, qHint) {
+function parseServerListItems(htmlFragment, baseUrl, fallbackQuality) {
+  const servers = [];
+  const seenLinks = {};
+  const liRegex = /<li\b([^>]*data-link=["'][^"']+["'][^>]*)>([\s\S]*?)<\/li>/gi;
+  let m;
+
+  while ((m = liRegex.exec(htmlFragment)) !== null) {
+    const attrs = m[1];
+    const inner = m[2];
+
+    const linkMatch = attrs.match(/data-link=["']([^"']+)["']/i);
+    if (!linkMatch || !linkMatch[1]) continue;
+
+    const rawLink = normalizeUrl(linkMatch[1], baseUrl);
+    if (seenLinks[rawLink]) continue;
+    seenLinks[rawLink] = true;
+
+    const quMatch = attrs.match(/data-qu=["'](\d+)["']/i);
+    const nameMatch = attrs.match(/data-server-name=["']([^"']+)["']/i);
+    const sizeMatch = attrs.match(/data-file-size=["']([^"']*)["']/i);
+    const directMatch = attrs.match(/data-direct-arabseed=["'](\d)["']/i);
+
+    const serverName = nameMatch
+      ? decodeHtmlEntities(nameMatch[1]).trim()
+      : decodeHtmlEntities(inner.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim() || 'Server';
+
+    const quality = quMatch ? quMatch[1] + 'p' : fallbackQuality || 'Auto';
+
+    servers.push({
+      rawLink: rawLink,
+      unwrappedLink: unwrapMySeedEmbedUrl(rawLink, baseUrl),
+      quality: normalizeQualityLabel(quality),
+      name: serverName,
+      fileSize: sizeMatch ? decodeHtmlEntities(sizeMatch[1]).trim() : '',
+      isDirectMySeed: directMatch ? directMatch[1] === '1' : rawLink.indexOf('/vids.php') !== -1
+    });
+  }
+
+  return servers;
+}
+
+function extractAvailableQualities(watchHtml) {
+  const qualities = [];
+  const seen = {};
+  const qRegex = /<li\b[^>]*data-quality=["'](\d+)["'][^>]*>/gi;
+  let m;
+  while ((m = qRegex.exec(watchHtml)) !== null) {
+    const q = m[1];
+    if (!seen[q]) {
+      seen[q] = true;
+      qualities.push(q);
+    }
+  }
+  qualities.sort(function (a, b) {
+    return parseInt(b, 10) - parseInt(a, 10);
+  });
+  return qualities;
+}
+
+async function fetchServersForQuality(baseUrl, watchUrl, postId, csrfToken, qualityNum) {
+  const formBody =
+    'post_id=' +
+    encodeURIComponent(postId) +
+    '&quality=' +
+    encodeURIComponent(qualityNum) +
+    (csrfToken ? '&csrf_token=' + encodeURIComponent(csrfToken) : '');
+
+  const endpoints = [
+    baseUrl + '/get__quality__servers/',
+    baseUrl + '/get__watch__server/'
+  ];
+
+  for (let i = 0; i < endpoints.length; i++) {
+    try {
+      const body =
+        i === 1
+          ? formBody + '&server=0'
+          : formBody;
+
+      const res = await fetchWithTimeout(
+        endpoints[i],
+        {
+          method: 'POST',
+          headers: buildHeaders(watchUrl, {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest',
+            Origin: baseUrl
+          }),
+          body: body
+        },
+        8000
+      );
+
+      if (!res.ok) continue;
+      const txt = await res.text();
+      if (!txt) continue;
+
+      let htmlPayload = txt;
+      try {
+        const parsed = JSON.parse(txt);
+        if (parsed.html) htmlPayload = parsed.html;
+        else if (parsed.servers) htmlPayload = parsed.servers;
+        else if (parsed.server && typeof parsed.server === 'string') {
+          const unwrapped = unwrapMySeedEmbedUrl(parsed.server, baseUrl);
+          return [
+            {
+              rawLink: normalizeUrl(parsed.server, baseUrl),
+              unwrappedLink: unwrapped,
+              quality: normalizeQualityLabel(qualityNum + 'p'),
+              name: 'سيرفر ماي سيد المباشر',
+              fileSize: parsed.file_size || '',
+              isDirectMySeed: true
+            }
+          ];
+        }
+      } catch (e) {}
+
+      const parsedItems = parseServerListItems(htmlPayload, baseUrl, qualityNum + 'p');
+      if (parsedItems.length > 0) {
+        return parsedItems;
+      }
+    } catch (e) {
+      console.log('[MySeed] Quality AJAX failed (' + qualityNum + 'p):', e.message);
+    }
+  }
+
+  return [];
+}
+
+// ============================================================================
+// 5. استخراج روابط الفيديو الفعلية من السيرفر المباشر والمشغلات الخارجية
+// ============================================================================
+
+function collectMediaUrlsFromPlayerHtml(html, metaInfo, refererUrl, seen, streams) {
+  function pushStream(rawUrl, qOverride) {
     const cleanUrl = decodeHtmlEntities(String(rawUrl || '').replace(/\\\//g, '/').trim());
-    if (!/^https?:\/\//i.test(cleanUrl)) return;
+    if (isFakeOrInvalidMediaUrl(cleanUrl)) return;
     if (seen[cleanUrl]) return;
-    if (/\.(?:jpg|jpeg|png|webp|gif|svg|vtt|srt|js|css|ico)(?:\?|$)/i.test(cleanUrl)) return;
     seen[cleanUrl] = true;
 
-    const quality = normalizeQualityLabel(qHint || defaultQuality || cleanUrl);
+    // استخدام الجودة الحقيقية القادمة من تبويب الموقع أولاً
+    const finalQuality =
+      metaInfo.quality && metaInfo.quality !== 'Auto'
+        ? metaInfo.quality
+        : normalizeQualityLabel(qOverride || cleanUrl);
+
     const streamType = cleanUrl.indexOf('.m3u8') !== -1 ? 'HLS' : 'MP4';
+    const versionTag = metaInfo.versionLabel ? ' • ' + metaInfo.versionLabel : '';
+    const sizeTag = metaInfo.fileSize ? ' • ' + metaInfo.fileSize : '';
 
     streams.push({
       name: 'MySeed',
-      title: '🎬 MySeed • ' + quality + ' [' + sourceLabel + ' - ' + streamType + ']',
+      title:
+        '🎬 MySeed • ' +
+        finalQuality +
+        versionTag +
+        sizeTag +
+        '\n⚡ ' +
+        metaInfo.serverName +
+        ' [' +
+        streamType +
+        ']',
       url: cleanUrl,
-      quality: quality,
+      quality: finalQuality,
       headers: {
         Referer: refererUrl,
         Origin: getOriginFromUrl(refererUrl),
@@ -549,124 +797,170 @@ function extractMediaFromText(text, sourceLabel, refererUrl, defaultQuality, see
     });
   }
 
-  const unpacked = unpackDeanEdwards(text);
-  const combined = unpacked ? text + '\n' + unpacked : text;
+  const unpacked = unpackDeanEdwards(html);
+  const combined = unpacked ? html + '\n' + unpacked : html;
 
-  const sourceRegex = /<source\b[^>]*src=["']([^"']+)["'][^>]*>/gi;
+  // 1) <source src="..."> و <video src="...">
+  const sourceRegex = /<(?:source|video)\b[^>]*src=["']([^"']+)["'][^>]*>/gi;
   let m;
   while ((m = sourceRegex.exec(combined)) !== null) {
     const sizeMatch = m[0].match(/(?:size|label)=["']?(\d{3,4}p?)["']?/i);
-    pushStream(m[1], sizeMatch ? sizeMatch[1] : defaultQuality);
+    pushStream(m[1], sizeMatch ? sizeMatch[1] : '');
   }
 
-  const jwRegex = /file\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["'](?:[^}]{0,100}label\s*:\s*["']([^"']+)["'])?/gi;
-  while ((m = jwRegex.exec(combined)) !== null) {
-    pushStream(m[1], m[2] || defaultQuality);
+  // 2) أنماط المشغلات: file: "...", hls: "...", mp4: "...", src: "..."
+  const keyRegex =
+    /["']?(?:file|hls|mp4|videoUrl|stream_url|source)["']?\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"']*)["']/gi;
+  while ((m = keyRegex.exec(combined)) !== null) {
+    pushStream(m[1], '');
   }
 
+  // 3) نمط VOE: 'hls': 'BASE64' أو atob('BASE64')
+  const b64FieldRegex = /["'](?:hls|mp4|file|source)["']\s*:\s*["']([A-Za-z0-9+/=\-_]{30,})["']/gi;
+  while ((m = b64FieldRegex.exec(combined)) !== null) {
+    const decoded = base64Decode(m[1]).trim();
+    if (/^https?:\/\/.+\.(?:m3u8|mp4)/i.test(decoded)) {
+      pushStream(decoded, '');
+    }
+  }
+
+  const atobRegex = /atob\(\s*["']([A-Za-z0-9+/=\-_]{24,})["']\s*\)/gi;
+  while ((m = atobRegex.exec(combined)) !== null) {
+    const decoded = base64Decode(m[1]).trim();
+    if (/^https?:\/\/.+\.(?:m3u8|mp4)/i.test(decoded)) {
+      pushStream(decoded, '');
+    }
+  }
+
+  // 4) روابط m3u8 / mp4 مباشرة داخل السكربت
   const rawRegex = /(https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>\\]*)?)/gi;
   while ((m = rawRegex.exec(combined)) !== null) {
-    pushStream(m[1], defaultQuality);
+    pushStream(m[1], '');
   }
 }
 
-async function probeEmbedUrl(embedUrl, label, qualityHint, watchUrl, seen, streams) {
-  try {
-    const res = await fetchWithTimeout(embedUrl, { headers: buildHeaders(watchUrl) }, 9000);
-    if (!res.ok) return;
-    const html = await res.text();
-    extractMediaFromText(html, label, embedUrl, qualityHint, seen, streams);
+async function resolveEmbedServer(serverObj, watchUrl, baseUrl, versionLabel, seen, streams) {
+  const metaInfo = {
+    quality: serverObj.quality,
+    serverName: serverObj.name,
+    fileSize: serverObj.fileSize,
+    versionLabel: versionLabel
+  };
 
-    const nestedIframe = html.match(/<iframe\b[^>]*src=["'](https?:\/\/[^"']+)["']/i);
-    if (nestedIframe && nestedIframe[1] && nestedIframe[1] !== embedUrl) {
-      if (!/google|facebook|ads|disqus|cloudflare/i.test(nestedIframe[1])) {
-        const res2 = await fetchWithTimeout(nestedIframe[1], { headers: buildHeaders(embedUrl) }, 8000);
-        if (res2.ok) {
-          extractMediaFromText(await res2.text(), label, nestedIframe[1], qualityHint, seen, streams);
+  // نبدأ بالرابط المفكوك (أو الرابط المباشر لـ /vids.php)
+  const candidatesToTry = [];
+  if (serverObj.isDirectMySeed) {
+    candidatesToTry.push({ url: serverObj.rawLink, referer: watchUrl });
+  } else {
+    candidatesToTry.push({ url: serverObj.unwrappedLink, referer: serverObj.rawLink });
+    if (serverObj.rawLink !== serverObj.unwrappedLink) {
+      candidatesToTry.push({ url: serverObj.rawLink, referer: watchUrl });
+    }
+  }
+
+  for (let idx = 0; idx < candidatesToTry.length; idx++) {
+    const startCount = streams.length;
+    const target = candidatesToTry[idx];
+
+    try {
+      // حالة خاصة لمشغل Vidara (يدعم API مباشر أحياناً)
+      const vidaraMatch = target.url.match(/vidara\.[^/]+\/e\/([A-Za-z0-9]+)/i);
+      if (vidaraMatch && vidaraMatch[1]) {
+        try {
+          const origin = getOriginFromUrl(target.url);
+          const apiRes = await fetchWithTimeout(
+            origin + '/api/stream?filecode=' + encodeURIComponent(vidaraMatch[1]),
+            { headers: buildHeaders(target.url, { Accept: 'application/json' }) },
+            7000
+          );
+          if (apiRes && apiRes.ok) {
+            const apiTxt = await apiRes.text();
+            collectMediaUrlsFromPlayerHtml(apiTxt, metaInfo, target.url, seen, streams);
+          }
+        } catch (e) {}
+      }
+
+      if (streams.length > startCount) return;
+
+      const res = await fetchWithTimeout(target.url, { headers: buildHeaders(target.referer) }, 9500);
+      if (!res || !res.ok) continue;
+
+      const finalUrl = res.url || target.url;
+      const contentType = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+
+      // لو السيرفر عمل Redirect مباشر لملف فيديو
+      if (/video\/|mpegurl/i.test(contentType) || /\.(?:mp4|m3u8)(?:\?|$)/i.test(finalUrl)) {
+        if (!isFakeOrInvalidMediaUrl(finalUrl) && !seen[finalUrl]) {
+          seen[finalUrl] = true;
+          const streamType = finalUrl.indexOf('.m3u8') !== -1 ? 'HLS' : 'MP4';
+          const vTag = versionLabel ? ' • ' + versionLabel : '';
+          const sTag = serverObj.fileSize ? ' • ' + serverObj.fileSize : '';
+          streams.push({
+            name: 'MySeed',
+            title:
+              '🎬 MySeed • ' +
+              serverObj.quality +
+              vTag +
+              sTag +
+              '\n⚡ ' +
+              serverObj.name +
+              ' [' +
+              streamType +
+              ']',
+            url: finalUrl,
+            quality: serverObj.quality,
+            headers: {
+              Referer: target.referer,
+              Origin: getOriginFromUrl(target.referer),
+              'User-Agent': USER_AGENT
+            },
+            provider: 'myseed'
+          });
+          return;
         }
       }
+
+      const html = await res.text();
+      collectMediaUrlsFromPlayerHtml(html, metaInfo, finalUrl, seen, streams);
+      if (streams.length > startCount) return;
+
+      // متابعة إعادة التوجيه عبر JS (شائعة جداً في VOE و vids.php) أو iframe داخلي
+      const jsRedirectMatch =
+        html.match(/window\.location\.href\s*=\s*["'](https?:\/\/[^"']+)["']/i) ||
+        html.match(/location\.replace\(\s*["'](https?:\/\/[^"']+)["']\s*\)/i) ||
+        html.match(/<meta[^>]+http-equiv=["']refresh["'][^>]+url=([^"';>\s]+)/i);
+
+      const nestedIframeMatch = html.match(/<iframe\b[^>]*src=["']([^"']+)["']/i);
+      const nextHopRaw = (jsRedirectMatch && jsRedirectMatch[1]) || (nestedIframeMatch && nestedIframeMatch[1]);
+
+      if (nextHopRaw) {
+        const nextHop = unwrapMySeedEmbedUrl(normalizeUrl(nextHopRaw, getOriginFromUrl(finalUrl)), baseUrl);
+        if (
+          /^https?:\/\//i.test(nextHop) &&
+          nextHop !== finalUrl &&
+          !/google|facebook|ads|disqus|cloudflare|llvpn/i.test(nextHop)
+        ) {
+          const res2 = await fetchWithTimeout(nextHop, { headers: buildHeaders(finalUrl) }, 8500);
+          if (res2 && res2.ok) {
+            const html2 = await res2.text();
+            collectMediaUrlsFromPlayerHtml(html2, metaInfo, res2.url || nextHop, seen, streams);
+          }
+        }
+      }
+
+      if (streams.length > startCount) return;
+    } catch (e) {
+      console.log('[MySeed] Server probe error (' + serverObj.name + '):', e.message);
     }
-  } catch (e) {
-    console.log('[MySeed] Embed probe skipped (' + label + '):', e.message);
-  }
-}
-
-async function probeAjaxServers(watchHtml, watchUrl, baseUrl, seen, streams) {
-  const csrfMatch =
-    watchHtml.match(/csrf__token["']?\s*[:=]\s*["']([^"']+)["']/i) ||
-    watchHtml.match(/name=["']csrf_token["'][^>]*value=["']([^"']+)["']/i);
-  const postIdMatch =
-    watchHtml.match(/data-post=["'](\d+)["']/i) ||
-    watchHtml.match(/post_id["']?\s*[:=]\s*["']?(\d+)["']?/i);
-
-  if (!postIdMatch) return;
-
-  const postId = postIdMatch[1];
-  const csrfToken = csrfMatch ? csrfMatch[1] : '';
-  const serverRegex = /<li\b[^>]*data-server=["'](\d+)["'][^>]*>([\s\S]*?)<\/li>/gi;
-  const ajaxTasks = [];
-  let sm;
-
-  while ((sm = serverRegex.exec(watchHtml)) !== null && ajaxTasks.length < 4) {
-    const serverIdx = sm[1];
-    const quMatch = sm[0].match(/data-qu=["'](\d+)["']/i);
-    const quality = quMatch ? quMatch[1] + 'p' : '1080p';
-    const label = decodeHtmlEntities(sm[2].replace(/<[^>]+>/g, ' ')).trim() || 'Server ' + serverIdx;
-
-    const formBody =
-      'post_id=' +
-      encodeURIComponent(postId) +
-      '&quality=' +
-      encodeURIComponent(quMatch ? quMatch[1] : '1080') +
-      '&server=' +
-      encodeURIComponent(serverIdx) +
-      (csrfToken ? '&csrf_token=' + encodeURIComponent(csrfToken) : '');
-
-    ajaxTasks.push(
-      fetchWithTimeout(
-        baseUrl + '/get__watch__server/',
-        {
-          method: 'POST',
-          headers: buildHeaders(watchUrl, {
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'X-Requested-With': 'XMLHttpRequest',
-            Origin: baseUrl
-          }),
-          body: formBody
-        },
-        8000
-      )
-        .then(function (r) {
-          return r.ok ? r.text() : '';
-        })
-        .then(function (txt) {
-          if (!txt) return;
-          let embedUrl = '';
-          try {
-            const parsed = JSON.parse(txt);
-            embedUrl = parsed.server || parsed.url || '';
-          } catch (e) {
-            const m = txt.match(/https?:\/\/[^\s"'<>\\]+/i);
-            embedUrl = m ? m[0] : '';
-          }
-          if (embedUrl) {
-            return probeEmbedUrl(normalizeUrl(embedUrl, baseUrl), label, quality, watchUrl, seen, streams);
-          }
-        })
-        .catch(function () {})
-    );
-  }
-
-  if (ajaxTasks.length > 0) {
-    await Promise.all(ajaxTasks);
   }
 }
 
 async function resolveWatchUrl(itemUrl, baseUrl) {
+  if (/\/watch\/?$/i.test(itemUrl)) return itemUrl;
   try {
     const res = await fetchWithTimeout(itemUrl, { headers: buildHeaders(baseUrl + '/main/') });
     if (res.ok) {
-      const html = await res.text();
+      const html = stripHeadAndSchema(await res.text());
       const watchBtnMatch =
         html.match(/<a\b[^>]*class=["'][^"']*(?:watchBTn|watch__btn)[^"']*["'][^>]*href=["']([^"']+)["']/i) ||
         html.match(/<a\b[^>]*href=["']([^"']+\/watch\/?)["']/i);
@@ -680,8 +974,98 @@ async function resolveWatchUrl(itemUrl, baseUrl) {
   return itemUrl.replace(/\/$/, '') + '/watch/';
 }
 
+async function scrapeWatchPage(itemUrl, versionLabel, baseUrl, seen, streams) {
+  const watchUrl = await resolveWatchUrl(itemUrl, baseUrl);
+  const watchRes = await fetchWithTimeout(watchUrl, { headers: buildHeaders(itemUrl) });
+  if (!watchRes.ok) {
+    console.log('[MySeed] Watch page HTTP status:', watchRes.status);
+    return;
+  }
+
+  const fullWatchHtml = await watchRes.text();
+  const bodyHtml = stripHeadAndSchema(fullWatchHtml);
+
+  // استخراج post_id و csrf__token من الصفحة
+  const csrfMatch = fullWatchHtml.match(/['"]csrf__token['"]\s*:\s*['"]([^'"]+)['"]/i);
+  const postIdMatch =
+    bodyHtml.match(/data-post=["'](\d+)["']/i) ||
+    fullWatchHtml.match(/['"]p(?:so|os)t_id['"]\s*:\s*['"](\d+)['"]/i) ||
+    fullWatchHtml.match(/postid-(\d+)/i);
+
+  const csrfToken = csrfMatch ? csrfMatch[1] : '';
+  const postId = postIdMatch ? postIdMatch[1] : '';
+
+  // 1) السيرفرات الظاهرة افتراضياً في الصفحة (مثلاً 480p)
+  let allServers = parseServerListItems(bodyHtml, baseUrl, '');
+  const loadedQualities = {};
+  allServers.forEach(function (s) {
+    const qDigits = String(s.quality).replace(/\D/g, '');
+    if (qDigits) loadedQualities[qDigits] = true;
+  });
+
+  // 2) جلب سيرفرات باقي الجودات (1080p, 720p) عبر AJAX بالتوازي
+  const availableQualities = extractAvailableQualities(bodyHtml);
+  if (postId && availableQualities.length > 0) {
+    const missingQualities = availableQualities.filter(function (q) {
+      return !loadedQualities[q];
+    });
+
+    if (missingQualities.length > 0) {
+      const qualityBatches = await Promise.all(
+        missingQualities.map(function (q) {
+          return fetchServersForQuality(baseUrl, watchUrl, postId, csrfToken, q);
+        })
+      );
+      qualityBatches.forEach(function (batch) {
+        allServers = allServers.concat(batch);
+      });
+    }
+  }
+
+  // Fallback لو مفيش <li> بس فيه iframe جاهز في الصفحة
+  if (allServers.length === 0) {
+    const frameMatch = bodyHtml.match(/<iframe\b[^>]*id=["']video_frame["'][^>]*src=["']([^"']+)["']/i);
+    if (frameMatch && frameMatch[1]) {
+      const raw = normalizeUrl(frameMatch[1], baseUrl);
+      allServers.push({
+        rawLink: raw,
+        unwrappedLink: unwrapMySeedEmbedUrl(raw, baseUrl),
+        quality: 'Auto',
+        name: 'سيرفر ماي سيد المباشر',
+        fileSize: '',
+        isDirectMySeed: raw.indexOf('/vids.php') !== -1
+      });
+    }
+  }
+
+  // ترتيب السيرفرات: أعلى جودة أولاً، ثم السيرفر المباشر أولاً داخل كل جودة
+  allServers.sort(function (a, b) {
+    const qDiff = qualityScore(b.quality) - qualityScore(a.quality);
+    if (qDiff !== 0) return qDiff;
+    if (a.isDirectMySeed !== b.isDirectMySeed) return a.isDirectMySeed ? -1 : 1;
+    return 0;
+  });
+
+  // اختيار أفضل السيرفرات لكل جودة (للحفاظ على سرعة الاستجابة)
+  const perQualityCount = {};
+  const selectedServers = [];
+  allServers.forEach(function (srv) {
+    const key = srv.quality;
+    perQualityCount[key] = (perQualityCount[key] || 0) + 1;
+    if (perQualityCount[key] <= CONFIG.MAX_SERVERS_PER_QUALITY) {
+      selectedServers.push(srv);
+    }
+  });
+
+  await Promise.all(
+    selectedServers.map(function (srv) {
+      return resolveEmbedServer(srv, watchUrl, baseUrl, versionLabel, seen, streams);
+    })
+  );
+}
+
 // ============================================================================
-// 5. الدالة الرئيسية (تدعم الصيغة الموضعية وصيغة الـ Object معاً)
+// 6. الدالة الرئيسية التي يستدعيها تطبيق Nuvio
 // ============================================================================
 
 async function getStreams(tmdbIdOrObj, mediaType, seasonNum, episodeNum) {
@@ -709,78 +1093,30 @@ async function getStreams(tmdbIdOrObj, mediaType, seasonNum, episodeNum) {
       return [];
     }
 
-    let targetUrl = await searchMySeed(meta, type, seasonArg);
-    if (!targetUrl) {
+    const matchedItems = await searchMySeed(meta, type, seasonArg);
+    if (!matchedItems || matchedItems.length === 0) {
       console.log('[MySeed] No search results for:', meta.title);
       return [];
     }
 
-    if (type === 'tv' && episodeArg) {
-      targetUrl = await resolveEpisodeUrl(targetUrl, seasonArg, episodeArg);
-      if (!targetUrl) {
-        console.log('[MySeed] Episode not found S' + seasonArg + 'E' + episodeArg);
-        return [];
-      }
-    }
-
-    const watchUrl = await resolveWatchUrl(targetUrl, baseUrl);
-    const watchRes = await fetchWithTimeout(watchUrl, { headers: buildHeaders(targetUrl) });
-    if (!watchRes.ok) {
-      console.log('[MySeed] Watch page HTTP status:', watchRes.status);
-      return [];
-    }
-
-    const watchHtml = await watchRes.text();
     const streams = [];
     const seen = {};
 
-    extractMediaFromText(watchHtml, 'MySeed Direct', watchUrl, 'Auto', seen, streams);
-
-    const embeds = [];
-    const seenEmbeds = {};
-
-    const attrRegex = /<(?:li|button|a)\b[^>]*data-(?:link|embed|url)=["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:li|button|a)>/gi;
-    let m;
-    while ((m = attrRegex.exec(watchHtml)) !== null) {
-      const embedUrl = normalizeUrl(m[1], baseUrl);
-      if (!/^https?:\/\//i.test(embedUrl) || seenEmbeds[embedUrl]) continue;
-      seenEmbeds[embedUrl] = true;
-      const text = decodeHtmlEntities(m[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-      const qMatch = text.match(/(2160|1080|720|480|360)p?/i);
-      embeds.push({
-        url: embedUrl,
-        label: text || 'Server',
-        quality: qMatch ? qMatch[1] + 'p' : 'Auto'
-      });
+    if (type === 'tv' && episodeArg) {
+      const epUrl = await resolveEpisodeUrl(matchedItems[0].url, seasonArg, episodeArg);
+      if (!epUrl) {
+        console.log('[MySeed] Episode not found S' + seasonArg + 'E' + episodeArg);
+        return [];
+      }
+      await scrapeWatchPage(epUrl, '', baseUrl, seen, streams);
+    } else {
+      await Promise.all(
+        matchedItems.map(function (item) {
+          const label = item.isDubbed ? 'مدبلج' : 'مترجم';
+          return scrapeWatchPage(item.url, label, baseUrl, seen, streams);
+        })
+      );
     }
-
-    const iframeRegex = /<iframe\b[^>]*src=["']([^"']+)["'][^>]*>/gi;
-    while ((m = iframeRegex.exec(watchHtml)) !== null) {
-      const embedUrl = normalizeUrl(m[1], baseUrl);
-      if (!/^https?:\/\//i.test(embedUrl) || seenEmbeds[embedUrl]) continue;
-      if (/google|facebook|twitter|ads|disqus|cloudflare/i.test(embedUrl)) continue;
-      seenEmbeds[embedUrl] = true;
-      embeds.push({
-        url: embedUrl,
-        label: 'MySeed Player',
-        quality: 'Auto'
-      });
-    }
-
-    embeds.sort(function (a, b) {
-      const aPref = /myseed|arabseed|asd\.|reviewrate|gamezone/i.test(a.url + a.label) ? 1 : 0;
-      const bPref = /myseed|arabseed|asd\.|reviewrate|gamezone/i.test(b.url + b.label) ? 1 : 0;
-      return bPref - aPref;
-    });
-
-    const probeTasks = embeds.slice(0, CONFIG.MAX_SERVERS_TO_PROBE).map(function (emb) {
-      return probeEmbedUrl(emb.url, emb.label, emb.quality, watchUrl, seen, streams);
-    });
-
-    await Promise.all([
-      Promise.all(probeTasks),
-      probeAjaxServers(watchHtml, watchUrl, baseUrl, seen, streams)
-    ]);
 
     streams.sort(function (a, b) {
       return qualityScore(b.quality) - qualityScore(a.quality);

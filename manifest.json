@@ -1,13 +1,13 @@
 {
   "name": "Arabic Direct Streams (Nuvio)",
-  "version": "2.2.0",
-  "description": "مستودع إضافات Nuvio محلية لجلب روابط البث المباشر بجودات متعددة من MySeed و CimaNow و Akoam و ArabSeed",
+  "version": "2.3.0",
+  "description": "مستودع إضافات Nuvio محلية لجلب روابط البث المباشر بجودات متعددة من MySeed و CimaNow و Akoam",
   "scrapers": [
     {
       "id": "myseed",
       "name": "MySeed (ArabSeed)",
-      "description": "أفلام ومسلسلات عربية وأجنبية مترجمة بجودات متعددة من m.myseed.tv (بث مباشر HTTP)",
-      "version": "1.0.0",
+      "description": "أفلام ومسلسلات عربية وأجنبية مترجمة ومدبلجة بجودات 1080p/720p/480p من m.myseed.tv",
+      "version": "1.1.0",
       "author": "Personal",
       "supportedTypes": [
         "movie",
@@ -60,28 +60,6 @@
       "filename": "providers/akoam.js",
       "enabled": true,
       "logo": "https://ak.sv/favicon.ico",
-      "contentLanguage": [
-        "ar",
-        "en"
-      ],
-      "formats": [
-        "mp4",
-        "m3u8"
-      ]
-    },
-    {
-      "id": "arabseed",
-      "name": "ArabSeed (Classic)",
-      "description": "النسخة الكلاسيكية من سكرابر عرب سيد كبديل احتياطي (بث مباشر HTTP)",
-      "version": "1.1.1",
-      "author": "Personal",
-      "supportedTypes": [
-        "movie",
-        "tv"
-      ],
-      "filename": "providers/arabseed.js",
-      "enabled": false,
-      "logo": "https://m.myseed.tv/favicon.ico",
       "contentLanguage": [
         "ar",
         "en"
